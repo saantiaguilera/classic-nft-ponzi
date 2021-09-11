@@ -311,7 +311,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
       finalH = uint256(attHth);
     }
     return(
-      attHth >= 0 || (attHth < 0 && trgHth < 0), // we fail in favor of the player if both die in the round.
+      (attHth >= 0 && trgHth <= 0) || (attHth < 0 && trgHth < 0), // we fail in favor of the player if both die in the round.
       att.health,
       finalH
     );
