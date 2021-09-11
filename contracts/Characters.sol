@@ -205,7 +205,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     emit NewCharacter(msg.sender, tokenID);
   }
 
-  function _generateStats(uint256 seed, uint256 multiplier) private view returns(uint256 h, uint256 d, uint8 affinity) {
+  function _generateStats(uint256 seed, uint256 multiplier) private pure returns(uint256 h, uint256 d, uint8 aff) {
     Affinity affinity = Affinity(seed.rand(0, 2));
     seed = seed.combine(uint256(affinity));
 
@@ -263,7 +263,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     }
   }
 
-  function _getRandomTarget(uint256 self) private returns(uint256) { 
+  function _getRandomTarget(uint256 self) private view returns(uint256) { 
     // Basic deterministic seed, consider using chainlink or something more secure
     uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, block.difficulty, self)));
     uint256 i = seed.rand(1, characters.length-1);
@@ -273,7 +273,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     return i;
   }
 
-  function _fight(uint256 self, uint256 target) private returns(bool won, uint256 initH, uint256 finalH) {
+  function _fight(uint256 self, uint256 target) private view returns(bool won, uint256 ih, uint256 fh) {
     Character memory att = characters[self];
     Character memory trg = characters[target];
 
@@ -296,7 +296,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     }
 
     // Basic deterministic seed, consider using chainlink or something more secure
-    uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, block.difficulty, self, target)));
+    uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, now, target)));
     while (attHth > 0 && trgHth > 0) { // fight.
       uint attRoll = seed.rand(attDmg, attDmg.mul(1500).div(1000));
       uint trgRoll = seed.rand(trgDmg, trgDmg.mul(1500).div(1000));
