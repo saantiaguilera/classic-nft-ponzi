@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
+import "abdk-libraries-solidity/ABDKMath64x64.sol";
 import "./oracle/PriceOracle.sol";
 import "./BasicRandom.sol";
 
@@ -16,6 +17,7 @@ import "./BasicRandom.sol";
 //  * Claim money
 contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeable {
   
+  using ABDKMath64x64 for int128;
   using BasicRandom for uint256;
   using PriceOracleUSD for PriceOracle;
 
@@ -47,7 +49,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   struct FightCount {
     uint256 timestamp;
     uint256 count;
-    bool    block;
+    bool    blocked;
   }
 
   mapping(uint256 => FightCount) private fightStats;
@@ -80,22 +82,13 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     _;
   }
 
-  modifier ownerOf(uint256 target) {
-    uint256[] memory tokens = new uint256[](balanceOf(msg.sender));
-    bool found = false;
-    for (uint256 i = 0; i < tokens.length; i++) {
-      if (tokenOfOwnerByIndex(msg.sender, i) == target) {
-        found = true;
-        break;
-      }
-    }
-    
-    require(found, "token is not of owner");
+  modifier characterOf(uint256 target) {
+    require(ownerOf(target) == msg.sender, "sender not owner");
     _;
   }
 
   modifier available(uint256 self) {
-    require(fightStats[self].timestamp + 1 days < now && !fightStats[self].block, "cannot fight anymore today");
+    require(fightStats[self].timestamp + 1 days < now && !fightStats[self].blocked, "cannot fight anymore today");
     _;
   }
 
@@ -121,18 +114,18 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   }
 
   // getCharacter returns unpacked Character struct
-  function getCharacter(uint256 id) 
+  function getCharacter(uint256 tokenID) 
     public view 
-    ownerOf(id) 
+    characterOf(tokenID) 
     returns(
-      string name,
+      string memory name,
       uint256 health,
       uint256 damage,
       uint8 affinity,
       uint8 rarity
     ) {
     
-    Character memory char = characters[id];
+    Character memory char = characters[tokenID];
     return (
       char.name,
       char.health,
@@ -143,7 +136,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   }
 
   function getUnclaimedRewards() public view returns(uint256) {
-    return tokenRewads[msg.sender];
+    return tokenRewards[msg.sender];
   }
 
   // In percentage. Gets 1% lower per day
@@ -157,19 +150,19 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
       ds = 15;
     }
 
-    return 15 - ds;
+    return 15 - uint8(ds); // safe cast. fits even in a word.
   }
 
-  function getNumberOfFightsAvailable(id) public view ownerOf(id) returns(uint8) {
-    FightCount memory fc = fightStats[id];
+  function getNumberOfFightsAvailable(uint256 tokenID) public view characterOf(tokenID) returns(uint8) {
+    FightCount memory fc = fightStats[tokenID];
     if (fc.blocked) {
       return 0;
     }
-    return 4 - fc.count % 4;
+    return 4 - uint8(fc.count % 4);
   }
 
-  function getFightingResetTime() public view returns(uint256) {
-    return fightingStats[id].timestamp.add(1 days);
+  function getFightingResetTime(uint256 tokenID) public view characterOf(tokenID) returns(uint256) {
+    return fightStats[tokenID].timestamp.add(1 days);
   }
 
   // mint a character.
@@ -180,7 +173,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
     uint tokenID = characters.length;
     // Basic determinstic seed, consider using chainlink or something more secure
-    uint256 seed = uint256(keccak(abi.encodePacked(msg.sender, block.number, block.difficulty)));
+    uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, block.difficulty)));
 
     uint256 n = seed.rand(1, 1000);
     Rarity rarity = Rarity.MYTHICAL; // 0.01% MYTHICAL (n=1000)
@@ -200,60 +193,99 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     }
 
     seed = seed.combine(n);
-    Affinity affinity = Affinity(seed.rand(0, 2));
+    (uint256 h, uint256 d, uint8 affinity) = _generateStats(seed, multiplier);   
 
-    uint256 hl;
-    uint256 hr;
-    uint256 dl;
-    uint256 dr;
-    if (affinity == Affinity.TANK) { // High health pool, low damage
-      hl = 1500;
-      hr = 2000;
-      dl = 166;
-      dr = 375;
-    } else if (affinity == Affinity.BRAWLER) { // Medium health poo, medium damage
-      hl = 1000;
-      hr = 1500;
-      dl = 250;
-      dr = 500;
-    } else if (affinity = Affinity.MAGE) { // low health pool, high damage
-      hl = 500;
-      hr = 1000;
-      dl = 500;
-      dr = 750;
-    }
-
-    seed = seed.combine(uint256(affinity));
     characters.push(Character(
       name,
-      seed.rand(hl * multiplier, hr * multiplier).mul(multiplier).div(1000),
-      seed.rand(dl * multiplier, dr * multiplier).mul(multiplier).div(1000),
-      affinity,
+      h, d,
+      Affinity(affinity),
       rarity
     ));
     _safeMint(msg.sender, tokenID);
     emit NewCharacter(msg.sender, tokenID);
   }
 
+  function _generateStats(uint256 seed, uint256 multiplier) private view returns(uint256 h, uint256 d, uint8 affinity) {
+    Affinity affinity = Affinity(seed.rand(0, 2));
+    seed = seed.combine(uint256(affinity));
+
+    if (affinity == Affinity.TANK) { // High health pool, low damage
+      return (
+        seed.rand(1500 * multiplier, 2000 * multiplier).mul(multiplier).div(1000),
+        seed.rand(166 * multiplier, 375 * multiplier).mul(multiplier).div(1000),
+        uint8(affinity)
+      );
+    }
+    if (affinity == Affinity.BRAWLER) { // Medium health poo, medium damage
+      return (
+        seed.rand(1000 * multiplier, 1500 * multiplier).mul(multiplier).div(1000),
+        seed.rand(250 * multiplier, 500 * multiplier).mul(multiplier).div(1000),
+        uint8(affinity)
+      );
+    }
+    // defaults to mage: 
+    // low health pool, high damage
+    return (
+      seed.rand(500 * multiplier, 1000 * multiplier).mul(multiplier).div(1000),
+      seed.rand(500 * multiplier, 750 * multiplier).mul(multiplier).div(1000),
+      uint8(affinity)
+    );
+  }
+
   function fight(uint256 self) 
     public 
     onlyNonContract 
-    ownerOf(self) 
+    characterOf(self) 
     available(self) {
 
     uint256 target = _getRandomTarget(self);
+    (bool won, uint256 initH, uint256 finalH) = _fight(self, target);
+    require(initH >= finalH, "final health cannot be higher");
 
+    fightStats[self] = FightCount(now, fightStats[self].count+1, (fightStats[self].count+1) % 4 == 0);
+    if (won) {
+      if (cdrFee[msg.sender] == 0) {
+        cdrFee[msg.sender] = now;
+      }
+      
+      uint difficulty = 1000;
+      if (finalH <= initH.div(10)) { // less than 10% health
+        difficulty = 3000; // 3x payout
+      } else if (finalH <= initH.div(4)) { // less than 25% health
+        difficulty = 2000; // 2x payout
+      } else if (finalH <= initH.div(2)) { // less than 50% health
+        difficulty = 1500; // 1,5x payout
+      } else if (finalH <= initH.mul(3).div(4)) { // less than 75% health 
+        difficulty = 1250;
+      }
+      uint reward = priceOracle.convertUSD(winReward.mul(int128(difficulty)).div(1000));
+      tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward);
+    }
+  }
+
+  function _getRandomTarget(uint256 self) private returns(uint256) { 
+    // Basic deterministic seed, consider using chainlink or something more secure
+    uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, block.difficulty, self)));
+    uint256 i = seed.rand(1, characters.length-1);
+    if (i == self) {
+      return i+1;
+    }
+    return i;
+  }
+
+  function _fight(uint256 self, uint256 target) private returns(bool won, uint256 initH, uint256 finalH) {
     Character memory att = characters[self];
     Character memory trg = characters[target];
 
     bool attAdv = (uint8(att.affinity) + 1) % 3 == uint8(trg.affinity); // attacker is at advantage.
     bool trgAdv = (uint8(trg.affinity) + 1) % 3 == uint8(att.affinity); // target is at advantage.
-    require(!(attAdv & trgAdv), "both can't be at advantage");
+    require(!(attAdv && trgAdv), "both can't be at advantage");
 
     uint256 attDmg = att.damage;
-    int256 attHth = att.health;
+    int256 attHth = int256(att.health);
     uint256 trgDmg = trg.damage;
-    int256 trgHth = trg.health;
+    int256 trgHth = int256(trg.health);
+    require(attHth > 0 && trgHth > 0, "health overflow");
     if (attAdv) {
       attDmg = attDmg.mul(1200).div(1000);
       attHth = attHth * 1200 / 1000;
@@ -264,46 +296,24 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     }
 
     // Basic deterministic seed, consider using chainlink or something more secure
-    uint256 seed = uint256(keccak(abi.encodePacked(msg.sender, block.number, block.difficulty, self, target)));
+    uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, block.difficulty, self, target)));
     while (attHth > 0 && trgHth > 0) { // fight.
       uint attRoll = seed.rand(attDmg, attDmg.mul(1500).div(1000));
       uint trgRoll = seed.rand(trgDmg, trgDmg.mul(1500).div(1000));
       
       seed = seed.combine(attRoll).combine(trgRoll);
-      attHth -= trgDmg;
-      trgHth -= attDmg;
+      attHth -= int256(trgDmg);
+      trgHth -= int256(attDmg);
     }
 
-    bool won = attHth >= 0 || (attHth < 0 && trgHth < 0); // we fail in favor of the player if both die in the round.
-
-    fightStats[self] = FightCount(now, fightStats[self].count+1, (fightStats[self].count+1) % 4 == 0);
-    if (won) {
-      if (cdrFee[msg.sender] == 0) {
-        cdrFee[msg.sender] = now;
-      }
-      
-      uint reward = priceOracle.convertUSD(winReward.mul(difficulty).div(1000));
-      uint difficulty = 1000;
-      if (attHth <= att.health.div(10)) { // less than 10% health
-        difficulty = 3000; // 3x payout
-      } else if (attHth <= att.health.div(4)) { // less than 25% health
-        difficulty = 2000; // 2x payout
-      } else if (attHth <= att.health.div(2)) { // less than 50% health
-        difficulty = 1500; // 1,5x payout
-      } else if (attHth <= att.health.mul(3).div(4)) { // less than 75% health 
-        difficulty = 1250;
-      }
-      tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward.mul(difficulty).div(1000));
+    uint256 finalH = 0;
+    if (attHth > 0) { // consider underflows as zero health
+      finalH = uint256(attHth);
     }
-  }
-
-  function _getRandomTarget(uint256 self) private returns(uint256) { 
-    // Basic deterministic seed, consider using chainlink or something more secure
-    uint256 seed = uint256(keccak(abi.encodePacked(msg.sender, block.number, block.difficulty, self)));
-    uint256 i = seed.rand(1, characters.length-1);
-    if (i == self) {
-      return i+1;
-    }
-    return i;
+    return(
+      attHth >= 0 || (attHth < 0 && trgHth < 0), // we fail in favor of the player if both die in the round.
+      att.health,
+      finalH
+    );
   }
 }
