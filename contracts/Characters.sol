@@ -14,8 +14,6 @@ import "./BasicRandom.sol";
 // TODO: Consider making them separate entities.
 // TODO: Missing:
 //  * Claim money
-//  * Set fee and win reward method
-//  * Getters
 contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeable {
   
   using BasicRandom for uint256;
@@ -49,9 +47,10 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   struct FightCount {
     uint256 timestamp;
     uint256 count;
+    bool    block;
   }
 
-  mapping(uint256 => FightCount) private latestFights;
+  mapping(uint256 => FightCount) private fightStats;
   mapping(address => uint256) private cdrFee;
   mapping(address => uint256) private tokenRewards;
 
@@ -96,8 +95,81 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   }
 
   modifier available(uint256 self) {
-    require(latestFights[self].timestamp < now - 1 days && latestFights[self].count < 4, "only 4 fights per day");
+    require(fightStats[self].timestamp + 1 days < now && !fightStats[self].block, "cannot fight anymore today");
     _;
+  }
+
+  modifier restricted() {
+    require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "Not admin");
+    _;
+  }
+
+  function setMintFee(uint256 cts) public restricted {
+    mintFee = ABDKMath64x64.divu(cts, 100); // In cents eg. 500 -> 5 usd
+  }
+
+  function setWinRewards(uint256 cts) public restricted {
+    winReward = ABDKMath64x64.divu(cts, 100); // In cents eg. 500 -> 5 usd
+  }
+
+  function getMyCharacters() public view returns (uint256[] memory) {
+    uint256[] memory tokens = new uint256[](balanceOf(msg.sender));
+    for (uint256 i = 0; i < tokens.length; i++) {
+      tokens[i] = tokenOfOwnerByIndex(msg.sender, i);
+    }
+    return tokens;
+  }
+
+  // getCharacter returns unpacked Character struct
+  function getCharacter(uint256 id) 
+    public view 
+    ownerOf(id) 
+    returns(
+      string name,
+      uint256 health,
+      uint256 damage,
+      uint8 affinity,
+      uint8 rarity
+    ) {
+    
+    Character memory char = characters[id];
+    return (
+      char.name,
+      char.health,
+      char.damage,
+      uint8(char.affinity),
+      uint8(char.rarity)
+    );
+  }
+
+  function getUnclaimedRewards() public view returns(uint256) {
+    return tokenRewads[msg.sender];
+  }
+
+  // In percentage. Gets 1% lower per day
+  function getCurrentClaimTax() public view returns(uint8) {
+    uint256 t = cdrFee[msg.sender];
+    if (t == 0) {
+      return 0; // first time or just claimed
+    }
+    uint256 ds = now.sub(t).div(1 days);
+    if (ds > 15) { // if more than 15 days have passed, cap.
+      ds = 15;
+    }
+
+    return 15 - ds;
+  }
+
+  function getNumberOfFightsAvailable(id) public view ownerOf(id) returns(uint8) {
+    FightCount memory fc = fightStats[id];
+    if (fc.blocked) {
+      return 0;
+    }
+    return 4 - fc.count % 4;
+  }
+
+  function getFightingResetTime() public view returns(uint256) {
+    return fightingStats[id].timestamp.add(1 days);
   }
 
   // mint a character.
@@ -204,7 +276,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
     bool won = attHth >= 0 || (attHth < 0 && trgHth < 0); // we fail in favor of the player if both die in the round.
 
-    latestFights[self] = FightCount(now, (latestFights[self].count+1) % 4);
+    fightStats[self] = FightCount(now, fightStats[self].count+1, (fightStats[self].count+1) % 4 == 0);
     if (won) {
       if (cdrFee[msg.sender] == 0) {
         cdrFee[msg.sender] = now;
