@@ -13,13 +13,12 @@ import "./BasicRandom.sol";
 
 // Currently this contract is the NFT + the smart contract.
 // TODO: Consider making them separate entities.
-// TODO: Missing:
-//  * Claim money
 contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeable {
   
   using ABDKMath64x64 for int128;
   using BasicRandom for uint256;
   using PriceOracleUSD for PriceOracle;
+  using SafeERC20 for IERC20;
 
   event NewCharacter(address indexed minter, uint256 indexed character);
 
@@ -61,7 +60,6 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   Character[] private characters;
 
   int128 private mintFee;
-  int128 private winReward;
 
   function initialize(IERC20 _battleWagerToken, PriceOracle _priceOracle) public initializer {
     __ERC721_init("BattleWager character", "BWC");
@@ -73,7 +71,6 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     priceOracle = _priceOracle;
 
     mintFee = ABDKMath64x64.divu(50, 1); // 50 usd
-    winReward = ABDKMath64x64.divu(5, 1); // 5 usd
   }
 
   // onlyNonContract is a super simple modifier to shallowly detect if the address is a contract or not.
@@ -97,12 +94,13 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     _;
   }
 
-  function setMintFee(uint256 cts) public restricted {
-    mintFee = ABDKMath64x64.divu(cts, 100); // In cents eg. 500 -> 5 usd
+  modifier hasBalance(uint256 betAmount) {
+    require(tokenRewards[msg.sender] + battleWagerToken.balanceOf(msg.sender) >= betAmount, "not enough balance");
+    _;
   }
 
-  function setWinRewards(uint256 cts) public restricted {
-    winReward = ABDKMath64x64.divu(cts, 100); // In cents eg. 500 -> 5 usd
+  function setMintFee(uint256 cts) public restricted {
+    mintFee = ABDKMath64x64.divu(cts, 100); // In cents eg. 500 -> 5 usd
   }
 
   function getMyCharacters() public view returns (uint256[] memory) {
@@ -232,11 +230,12 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     );
   }
 
-  function fight(uint256 self) 
+  function fight(uint256 self, uint256 betAmount) 
     public 
     onlyNonContract 
     characterOf(self) 
-    available(self) {
+    available(self)
+    hasBalance(betAmount) {
 
     uint256 target = _getRandomTarget(self);
     (bool won, uint256 initH, uint256 finalH) = _fight(self, target);
@@ -248,7 +247,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
         cdrFee[msg.sender] = now;
       }
       
-      uint difficulty = 1000;
+      uint difficulty = 1100; // 10% winnings base
       if (finalH <= initH.div(10)) { // less than 10% health
         difficulty = 3000; // 3x payout
       } else if (finalH <= initH.div(4)) { // less than 25% health
@@ -258,17 +257,36 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
       } else if (finalH <= initH.mul(3).div(4)) { // less than 75% health 
         difficulty = 1250;
       }
-      uint reward = priceOracle.convertUSD(winReward.mul(int128(difficulty)).div(1000));
+      uint reward = betAmount.mul(int128(difficulty)).div(1000);
       tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward);
+    } else {
+      if (tokenRewards[msg.sender] >= betAmount) { // has ingame balance
+        tokenRewards[msg.sender] = tokenRewards[msg.sender].sub(betAmount);
+      } else { // doesn't have full ingame balance
+        uint256 wb = betAmount.sub(tokenRewards[msg.sender]);
+        tokenRewards[msg.sender] = 0;
+        battleWagerToken.transferFrom(msg.sender, address(this), wb);        
+        cdrFee[msg.sender] = 0;
+      }
     }
   }
 
+  function claimRewards() public onlyNonContract {
+    require(tokenRewards[msg.sender] > 0, "nothing to claim");
+    uint256 tax = uint256(getCurrentClaimTax()).add(100).mul(10); // eg. (13 + 100) * 10 = 1130
+    uint256 claimable = tokenRewards[msg.sender].mul(tax).div(1000);
+
+    tokenRewards[msg.sender] = 0; // reset, taxed amount stays in the contract as it was already ours.
+    battleWagerToken.safeTransfer(msg.sender, claimable);
+  }
+
   function _getRandomTarget(uint256 self) private view returns(uint256) { 
+    require(characters.length > 1, "no enemies to fight");
     // Basic deterministic seed, consider using chainlink or something more secure
     uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, block.difficulty, self)));
     uint256 i = seed.rand(1, characters.length-1);
     if (i == self) {
-      return i+1;
+      return (i + 1) % characters.length; // next one
     }
     return i;
   }
