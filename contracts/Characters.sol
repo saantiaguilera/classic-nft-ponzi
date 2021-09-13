@@ -257,7 +257,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
       } else if (finalH <= initH.mul(3).div(4)) { // less than 75% health 
         difficulty = 1250;
       }
-      uint reward = betAmount.mul(int128(difficulty)).div(1000);
+      uint reward = betAmount.mul(difficulty).div(1000);
       tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward);
     } else {
       if (tokenRewards[msg.sender] >= betAmount) { // has ingame balance

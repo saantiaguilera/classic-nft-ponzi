@@ -40,7 +40,7 @@
       "build": "sudo truffle compile",
       "test": "sudo truffle test",
       "deploy": "sudo truffle migrate --reset",
-      "deploy-testnet": "truffle migrate --network bsctestnet"
+      "deploy-testnet": "sudo truffle migrate --network bsctestnet"
     },
     "keywords": [],
     "author": "",
