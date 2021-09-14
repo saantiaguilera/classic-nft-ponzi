@@ -230,53 +230,26 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     );
   }
 
-  function fight(uint256 self, uint256 betAmount) 
-    public 
-    onlyNonContract 
-    characterOf(self) 
-    available(self)
-    hasBalance(betAmount) {
-
-    uint256 target = _getRandomTarget(self);
-    (bool won, uint256 initH, uint256 finalH) = _fight(self, target);
-    require(initH >= finalH, "final health cannot be higher");
-
+  // cannot be performed infinite times. has a timelock
+  function fightSpecific(uint256 self, uint256 target, uint256 betAmount) public available(self) {
     fightStats[self] = FightCount(now, fightStats[self].count+1, (fightStats[self].count+1) % 4 == 0);
-    if (won) {
-      if (cdrFee[msg.sender] == 0) {
-        cdrFee[msg.sender] = now;
-      }
-      
-      uint difficulty = 1100; // 10% winnings base
-      if (finalH <= initH.div(10)) { // less than 10% health
-        difficulty = 3000; // 3x payout
-      } else if (finalH <= initH.div(4)) { // less than 25% health
-        difficulty = 2000; // 2x payout
-      } else if (finalH <= initH.div(2)) { // less than 50% health
-        difficulty = 1500; // 1,5x payout
-      } else if (finalH <= initH.mul(3).div(4)) { // less than 75% health 
-        difficulty = 1250;
-      }
-      uint reward = betAmount.mul(difficulty).div(1000);
-      tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward);
-    } else {
-      if (tokenRewards[msg.sender] >= betAmount) { // has ingame balance
-        tokenRewards[msg.sender] = tokenRewards[msg.sender].sub(betAmount);
-      } else { // doesn't have full ingame balance
-        uint256 wb = betAmount.sub(tokenRewards[msg.sender]);
-        tokenRewards[msg.sender] = 0;
-        battleWagerToken.transferFrom(msg.sender, address(this), wb);        
-        cdrFee[msg.sender] = 0;
-      }
-    }
+    _fight(self, target, betAmount, 10); // 90% reward penalization
   }
 
+  // can be performed as much as you want
+  function fight(uint256 self, uint256 betAmount) public {
+    uint256 target = _getRandomTarget(self);
+    _fight(self, target, betAmount, 100);
+  }
+
+  // claimRewards from ingame balance
   function claimRewards() public onlyNonContract {
     require(tokenRewards[msg.sender] > 0, "nothing to claim");
     uint256 tax = uint256(getCurrentClaimTax()).add(100).mul(10); // eg. (13 + 100) * 10 = 1130
     uint256 claimable = tokenRewards[msg.sender].mul(tax).div(1000);
 
     tokenRewards[msg.sender] = 0; // reset, taxed amount stays in the contract as it was already ours.
+    cdrFee[msg.sender] = 0;
     battleWagerToken.safeTransfer(msg.sender, claimable);
   }
 
@@ -291,7 +264,54 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     return i;
   }
 
-  function _fight(uint256 self, uint256 target) private view returns(bool won, uint256 ih, uint256 fh) {
+  function _fight(uint256 self, uint256 target, uint256 betAmount, uint256 rewardPercentage) 
+    private
+    onlyNonContract 
+    characterOf(self) 
+    hasBalance(betAmount) {
+
+    (bool won, uint256 initH, uint256 finalH) = _performFight(self, target);
+    require(initH >= finalH, "final health cannot be higher");
+
+    if (won) {
+      _onFightWon(initH, finalH, betAmount, rewardPercentage);
+    } else {
+      _onFightLost(betAmount);
+    }
+  }
+
+  function _onFightWon(uint256 initH, uint256 finalH, uint256 betAmount, uint256 rewardPercentage) private {
+    if (cdrFee[msg.sender] == 0) {
+      cdrFee[msg.sender] = now;
+    }
+      
+    uint difficulty = 100; // 10% winnings base
+    if (finalH <= initH.div(10)) { // less than 10% health
+      difficulty = 2000; // 2x payout
+    } else if (finalH <= initH.div(4)) { // less than 25% health
+      difficulty = 1000; // 1x payout
+    } else if (finalH <= initH.div(2)) { // less than 50% health
+      difficulty = 500; // 0,5x payout
+    } else if (finalH <= initH.mul(3).div(4)) { // less than 75% health 
+      difficulty = 250; // 25% payout
+    }
+    uint reward = betAmount.mul(difficulty).div(1000).mul(rewardPercentage * 10).div(1000);
+    tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward);
+  }
+
+  function _onFightLost(uint256 betAmount) private {
+    // gotta pay the bet
+    if (tokenRewards[msg.sender] >= betAmount) { // has enough ingame balance, use it
+      tokenRewards[msg.sender] = tokenRewards[msg.sender].sub(betAmount);
+    } else { // doesn't have full ingame balance, use wallet balance + ingame balance if any
+      uint256 wb = betAmount.sub(tokenRewards[msg.sender]);
+      tokenRewards[msg.sender] = 0;
+      cdrFee[msg.sender] = 0;
+      battleWagerToken.transferFrom(msg.sender, address(this), wb);        
+    }
+  }
+
+  function _performFight(uint256 self, uint256 target) private view returns(bool won, uint256 ih, uint256 fh) {
     Character memory att = characters[self];
     Character memory trg = characters[target];
 
