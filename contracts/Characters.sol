@@ -337,9 +337,15 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     uint256 seed = uint256(keccak256(abi.encodePacked(msg.sender, block.number, now, target)));
     while (attHth > 0 && trgHth > 0) { // fight.
       uint attRoll = seed.rand(attDmg, attDmg.mul(1500).div(1000));
-      uint trgRoll = seed.rand(trgDmg, trgDmg.mul(1500).div(1000));
-      
-      seed = seed.combine(attRoll).combine(trgRoll);
+      seed = seed.combine(attRoll);
+      uint trgRoll = seed.rand(trgDmg, trgDmg.mul(1500).div(1000)); 
+      seed = seed.combine(trgRoll);
+
+      if (seed.rand(1, 1000) == 1) { // 0,1% insta-death, in it for the house.
+        attRoll = 0;
+        trgRoll = uint256(attHth); // its deterministically >0
+      }
+
       attHth -= int256(trgDmg);
       trgHth -= int256(attDmg);
     }
