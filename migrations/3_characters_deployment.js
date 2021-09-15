@@ -13,5 +13,5 @@ module.exports = async function (deployer, network) {
   const priceOracle = await deployProxy(BasicPriceOracle, [], { deployer });
   const characters = await deployProxy(Characters, [bwToken.address, priceOracle.address], { deployer });
 
-  await characters.deployed();
+  await Characters.deployed();
 };

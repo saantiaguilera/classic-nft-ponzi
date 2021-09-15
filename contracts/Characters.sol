@@ -21,6 +21,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   using SafeERC20 for IERC20;
 
   event NewCharacter(address indexed minter, uint256 indexed character);
+  event NewFight(address indexed owner, uint256 indexed character, uint256 opponent, bool won, uint256 tokenRewards, uint256 hpLeft);
 
   struct Character {
     string name;
@@ -95,7 +96,8 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   }
 
   modifier hasBalance(uint256 betAmount) {
-    require(tokenRewards[msg.sender] + battleWagerToken.balanceOf(msg.sender) >= betAmount, "not enough balance");
+    require(betAmount > 0 && 
+      tokenRewards[msg.sender] + battleWagerToken.balanceOf(msg.sender) >= betAmount, "not enough balance");
     _;
   }
 
@@ -209,23 +211,23 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
     if (affinity == Affinity.TANK) { // High health pool, low damage
       return (
-        seed.rand(1500 * multiplier, 2000 * multiplier).mul(multiplier).div(1000),
-        seed.rand(166 * multiplier, 375 * multiplier).mul(multiplier).div(1000),
+        seed.rand(1500 * multiplier, 2000 * multiplier).div(1000),
+        seed.rand(166 * multiplier, 375 * multiplier).div(1000),
         uint8(affinity)
       );
     }
     if (affinity == Affinity.BRAWLER) { // Medium health poo, medium damage
       return (
-        seed.rand(1000 * multiplier, 1500 * multiplier).mul(multiplier).div(1000),
-        seed.rand(250 * multiplier, 500 * multiplier).mul(multiplier).div(1000),
+        seed.rand(1000 * multiplier, 1500 * multiplier).div(1000),
+        seed.rand(250 * multiplier, 500 * multiplier).div(1000),
         uint8(affinity)
       );
     }
     // defaults to mage: 
     // low health pool, high damage
     return (
-      seed.rand(500 * multiplier, 1000 * multiplier).mul(multiplier).div(1000),
-      seed.rand(500 * multiplier, 750 * multiplier).mul(multiplier).div(1000),
+      seed.rand(500 * multiplier, 1000 * multiplier).div(1000),
+      seed.rand(500 * multiplier, 750 * multiplier).div(1000),
       uint8(affinity)
     );
   }
@@ -273,14 +275,16 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     (bool won, uint256 initH, uint256 finalH) = _performFight(self, target);
     require(initH >= finalH, "final health cannot be higher");
 
+    uint256 rewards = 0;
     if (won) {
-      _onFightWon(initH, finalH, betAmount, rewardPercentage);
+      rewards = _onFightWon(initH, finalH, betAmount, rewardPercentage);
     } else {
       _onFightLost(betAmount);
     }
+    emit NewFight(msg.sender, self, target, won, rewards, finalH);
   }
 
-  function _onFightWon(uint256 initH, uint256 finalH, uint256 betAmount, uint256 rewardPercentage) private {
+  function _onFightWon(uint256 initH, uint256 finalH, uint256 betAmount, uint256 rewardPercentage) private returns(uint256) {
     if (cdrFee[msg.sender] == 0) {
       cdrFee[msg.sender] = now;
     }
@@ -295,8 +299,9 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     } else if (finalH <= initH.mul(3).div(4)) { // less than 75% health 
       difficulty = 250; // 25% payout
     }
-    uint reward = betAmount.mul(difficulty).div(1000).mul(rewardPercentage * 10).div(1000);
+    uint256 reward = betAmount.mul(difficulty).div(1000).mul(rewardPercentage * 10).div(1000);
     tokenRewards[msg.sender] = tokenRewards[msg.sender].add(reward);
+    return reward;
   }
 
   function _onFightLost(uint256 betAmount) private {

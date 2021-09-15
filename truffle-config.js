@@ -2,10 +2,9 @@ require('dotenv').config();
 
 function hdWalletProviderOptions(privateKeyEnvVarValue, mnemonicPhraseEnvVarValue, otherOpts) {
   const opts = { ...otherOpts };
-  if(privateKeyEnvVarValue) {
+  if (privateKeyEnvVarValue) {
     opts.privateKeys = [privateKeyEnvVarValue];
-  }
-  else {
+  } else {
     opts.mnemonic = mnemonicPhraseEnvVarValue;
   }
   return opts;
@@ -37,20 +36,21 @@ module.exports = {
       network_id: process.env.ETH_DEV_RPC_NETWORK_ID || '*',       // Any network (default: none)
       gas: parseInt(process.env.ETH_DEV_RPC_GAS, 10) || 999999999 // required for deploy, otherwise it throws weird require-errors on constructor
     },
+    
     bsctestnet: {
       provider: () => new HDWalletProvider(hdWalletProviderOptions(
         process.env.BINANCE_WALLET_PRIVATE_KEY,
         process.env.BINANCE_WALLET_MNEMONIC,
         {
-          providerOrUrl: 'https://data-seed-prebsc-2-s2.binance.org:8545/'
+          providerOrUrl: 'https://data-seed-prebsc-2-s1.binance.org:8545/'
         }
       )),
       network_id: 0x61,
       confirmations: 10,
       timeoutBlocks: 200,
-      gas: 10000000,
       skipDryRun: true
     },
+
     bscmainnet: {
       provider: () => new HDWalletProvider(hdWalletProviderOptions(
         process.env.BINANCE_MAINNET_WALLET_PRIVATE_KEY,
@@ -62,7 +62,6 @@ module.exports = {
       network_id: 0x38,
       confirmations: 10,
       timeoutBlocks: 200,
-      gas: 5600000,
       skipDryRun: true
     },
   },
@@ -84,10 +83,12 @@ module.exports = {
       }
     }
   },
+
   plugins: [
     "truffle-plugin-verify",
     "truffle-contract-size"
   ],
+
   api_keys: {
     bscscan: process.env.BSCSCAN_API_KEY
   },
