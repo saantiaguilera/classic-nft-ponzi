@@ -11,7 +11,7 @@ module.exports = async function (deployer, network) {
   assert(bwToken != null, 'Expected bwToken to be set to a contract');
 
   const priceOracle = await deployProxy(BasicPriceOracle, [], { deployer });
-  const characters = await deployProxy(Characters, [bwToken.address, priceOracle.address], { deployer });
-
+  await deployProxy(Characters, [bwToken.address, priceOracle.address], { deployer });
+  
   await Characters.deployed();
 };

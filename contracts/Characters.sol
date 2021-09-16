@@ -25,6 +25,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
   struct Character {
     string name;
+    uint256 seed;
     uint256 health;
     uint256 damage;
     Affinity affinity;
@@ -60,7 +61,10 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   PriceOracle private priceOracle;
   Character[] private characters;
 
-  int128 private mintFee;
+  int128 private mintFee; // mintFee is the fee charged for a character mint to the sender
+  uint private ownerFee; // ownerFee is the fee charged from a payment that goes to the owner of this contract
+
+  address private feeBank;
 
   function initialize(IERC20 _battleWagerToken, PriceOracle _priceOracle) public initializer {
     __ERC721_init("BattleWager character", "BWC");
@@ -70,8 +74,10 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
     battleWagerToken = _battleWagerToken;
     priceOracle = _priceOracle;
+    feeBank = msg.sender;
 
     mintFee = ABDKMath64x64.divu(50, 1); // 50 usd
+    ownerFee = 20; // percentage
   }
 
   // onlyNonContract is a super simple modifier to shallowly detect if the address is a contract or not.
@@ -99,6 +105,16 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     require(betAmount > 0 && 
       tokenRewards[msg.sender] + battleWagerToken.balanceOf(msg.sender) >= betAmount, "not enough balance");
     _;
+  }
+
+  function setBankAddress(address addr) public restricted {
+    require(addr == address(0), "cannot be burned");
+    feeBank = addr;
+  }
+
+  function setOwnerFee(uint256 percentage) public restricted {
+    require(percentage > 0 && percentage <= 100, "percentage incorrect");
+    ownerFee = percentage;
   }
 
   function setMintFee(uint256 cts) public restricted {
@@ -169,7 +185,9 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
   function mint(string memory name) public onlyNonContract {
     uint256 chargeAmount = priceOracle.convertUSD(mintFee);
     require(battleWagerToken.balanceOf(msg.sender) >= chargeAmount);
-    battleWagerToken.transferFrom(msg.sender, address(this), chargeAmount);
+    (uint256 charge, uint256 remnant) = _taxate(chargeAmount, ownerFee);
+    battleWagerToken.transferFrom(msg.sender, address(this), charge);
+    battleWagerToken.transferFrom(msg.sender, feeBank, remnant);
 
     uint tokenID = characters.length;
     // Basic determinstic seed, consider using chainlink or something more secure
@@ -177,19 +195,19 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
     uint256 n = seed.rand(1, 1000);
     Rarity rarity = Rarity.MYTHICAL; // 0.01% MYTHICAL (n=1000)
-    uint256 multiplier = 1700; // 70%
+    uint256 multiplier = 2000; // 100%
     if (n <= 608) { // 60.8% COMMON
       rarity = Rarity.COMMON;
       multiplier = 1000; // 0%
     } else if (n <= 902) { // 29.4% RARE 
       rarity = Rarity.RARE;
-      multiplier = 1100; // 10%
+      multiplier = 1250; // 25%
     } else if (n <= 994) { // 9.2% EPIC
       rarity = Rarity.EPIC;
-      multiplier = 1200; // 20%
+      multiplier = 1500; // 50%
     } else if (n <= 999) { // 0.05% LEGENDARY
       rarity = Rarity.LEGENDARY;
-      multiplier = 1350; // 35%
+      multiplier = 1750; // 75%
     }
 
     seed = seed.combine(n);
@@ -197,12 +215,22 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
     characters.push(Character(
       name,
+      seed,
       h, d,
       Affinity(affinity),
       rarity
     ));
     _safeMint(msg.sender, tokenID);
     emit NewCharacter(msg.sender, tokenID);
+  }
+
+  function _taxate(uint256 i, uint256 fee) private pure returns(uint o, uint remnant) {
+    require(fee > 0 && fee <= 100, "fee unbounded");
+    require(i > 0, "zero input to taxate");
+    uint256 tax = uint256(100).sub(fee).mul(10);
+    uint256 charge = i.mul(tax).div(1000);
+    uint256 rest = i.sub(charge);
+    return (charge, rest);
   }
 
   function _generateStats(uint256 seed, uint256 multiplier) private pure returns(uint256 h, uint256 d, uint8 aff) {
@@ -246,13 +274,13 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
   // claimRewards from ingame balance
   function claimRewards() public onlyNonContract {
-    require(tokenRewards[msg.sender] > 0, "nothing to claim");
-    uint256 tax = uint256(getCurrentClaimTax()).add(100).mul(10); // eg. (13 + 100) * 10 = 1130
-    uint256 claimable = tokenRewards[msg.sender].mul(tax).div(1000);
+    (uint256 claimable, uint256 remnant) = _taxate(tokenRewards[msg.sender], getCurrentClaimTax());
+    (, uint256 ownerTax) = _taxate(remnant, ownerFee); // Owner keeps a fee from the remnant, not the whole claim tax.
 
-    tokenRewards[msg.sender] = 0; // reset, taxed amount stays in the contract as it was already ours.
+    tokenRewards[msg.sender] = 0; // reset
     cdrFee[msg.sender] = 0;
     battleWagerToken.safeTransfer(msg.sender, claimable);
+    battleWagerToken.safeTransfer(feeBank, ownerTax);
   }
 
   function _getRandomTarget(uint256 self) private view returns(uint256) { 
@@ -306,13 +334,15 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
 
   function _onFightLost(uint256 betAmount) private {
     // gotta pay the bet
-    if (tokenRewards[msg.sender] >= betAmount) { // has enough ingame balance, use it
+    if (tokenRewards[msg.sender] >= betAmount) { // has enough ingame balance, use it. We don't taxate in game balance
       tokenRewards[msg.sender] = tokenRewards[msg.sender].sub(betAmount);
     } else { // doesn't have full ingame balance, use wallet balance + ingame balance if any
       uint256 wb = betAmount.sub(tokenRewards[msg.sender]);
       tokenRewards[msg.sender] = 0;
       cdrFee[msg.sender] = 0;
-      battleWagerToken.transferFrom(msg.sender, address(this), wb);        
+      (uint256 payment, uint256 fee) = _taxate(wb, ownerFee);
+      battleWagerToken.transferFrom(msg.sender, address(this), payment);        
+      battleWagerToken.transferFrom(msg.sender, feeBank, fee);
     }
   }
 
@@ -330,11 +360,11 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
     int256 trgHth = int256(trg.health);
     require(attHth > 0 && trgHth > 0, "health overflow");
     if (attAdv) {
-      attDmg = attDmg.mul(1200).div(1000);
+      attDmg = attDmg.mul(1300).div(1000);
       attHth = attHth * 1200 / 1000;
     }
     if (trgAdv) {
-      trgDmg = trgDmg.mul(1200).div(1000);
+      trgDmg = trgDmg.mul(1300).div(1000);
       trgHth = trgHth * 1200 / 1000;
     }
 
@@ -352,6 +382,9 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
       }
 
       attHth -= int256(trgDmg);
+      if (attHth <= 0) {
+        continue;
+      }
       trgHth -= int256(attDmg);
     }
 
@@ -360,7 +393,7 @@ contract Characters is Initializable, ERC721Upgradeable, AccessControlUpgradeabl
       finalH = uint256(attHth);
     }
     return(
-      (attHth >= 0 && trgHth <= 0) || (attHth < 0 && trgHth < 0), // we fail in favor of the player if both die in the round.
+      attHth >= 0,
       att.health,
       finalH
     );

@@ -15,7 +15,7 @@ contract BattleWagerToken is ERC20 {
      * @dev Constructor that gives msg.sender all of existing tokens.
      */
     constructor() public ERC20("BattleWager Token", "BWR") {
-        _mint(address(this), 1000000 * (10 ** uint256(decimals())));
+        _mint(address(this), 100000000 * (10 ** uint256(decimals())));
         _approve(address(this), msg.sender, totalSupply());
     }
 }
